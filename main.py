@@ -14,6 +14,11 @@ import hashlib
 from functools import partial
 from multiprocessing import Pool, Manager
 import glob
+import re
+from hachoir import parser,metadata
+
+mime_types = ['jpeg', 'png', 'jpg', 'webp', 'gif', 'bmp', 'mp4', 'mov', 'm4v', 'wmv', 'avi', 'rm', 'rmvb']
+mime_types.extend(list(map(lambda s: s.upper(), mime_types)))
 
 root = os.getcwd()
 dist_root = os.path.join(root, 'dist')
@@ -43,12 +48,33 @@ def output_duplicated_files(duplicated_files):
                 f.write(item.replace(',', '\n') +'\n\n')
         print('存在重复文件，详情查看：重复文件记录.txt')
 
+def media_original_time(filePath):
+    parserFile = parser.createParser(filePath) #解析文件
+    if not parserFile:
+        return ''
+    try:
+        metadataDecode = metadata.extractMetadata(parserFile) # 获取文件的metadata
+    except ValueError:
+        return ''
+    if not metadataDecode:
+        return ''
+
+    metaInfos = metadataDecode.exportPlaintext(line_prefix="") # 将文件的metadata转换为list,且将前缀设置为空
+    creation_date = ''
+    date_time_original = ''
+    for meta in metaInfos:
+        #如果字符串在列表中,则提取数字部分,即为文件创建时间
+        if 'Creation date' in meta:
+            creation_date = re.sub(r"\D",'',meta)    #使用正则表达式将列表中的非数字元素剔除
+        elif 'Date-time original' in meta:
+            date_time_original = re.sub(r"\D",'',meta)    #使用正则表达式将列表中的非数字元素剔除
+    return (date_time_original or creation_date)[0:8]
+
 def move_file(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
         md5 = check_md5(path, f)
-        tags = exifread.process_file(f, stop_tag='DateTimeOriginal', details=False)
-
     unique_key = (os.path.getsize(path), md5.hexdigest())
+
     lock.acquire()
     if unique_key in record_files:
         if unique_key in duplicated_files:
@@ -57,24 +83,26 @@ def move_file(path, record_files, duplicated_files, lock):
             duplicated_files[unique_key] = record_files[unique_key] + ',' + path
         lock.release()
         return
-
-    create_time = tags.get('EXIF DateTimeOriginal') or tags.get('Image DateTime')
-    dist_dir = no_create_time_root
-    filename_prefix = unique_key[1][8:24] + '-'
-    if create_time != None:
-        year_month_day = str(create_time)[0:10].replace(':', '-')
-        year_month = year_month_day[0:7]
-        year = year_month[0:4]
-        filename_prefix = year_month_day.replace('-', '') + '-'
-        dist_dir = os.path.join(dist_root, year + '/' + year_month)
-    dist_path = os.path.join(dist_dir, filename_prefix + os.path.basename(path))
-
-    record_files[unique_key] = dist_path
+    record_files[unique_key] = '**-' + unique_key[1][8:24] + os.path.splitext(path)[1] #占位释放锁
     lock.release()
 
-    if create_time != None and not os.path.exists(dist_dir):
-        os.makedirs(dist_dir)
+    create_time = media_original_time(path)
+    dist_dir = no_create_time_root
+    filename_prefix = unique_key[1][8:24]
+    if create_time != '':
+        year_month_day = create_time
+        year_month = year_month_day[0:6]
+        year = year_month[0:4]
+        # 如果年份小于2000年明显不对
+        if int(year) > 2000:
+            filename_prefix = year_month_day + '-' + unique_key[1][8:24]
+            dist_dir = os.path.join(dist_root, year + '/' + year_month)
+            if not os.path.exists(dist_dir):
+                os.makedirs(dist_dir)
+
+    dist_path = os.path.join(dist_dir, filename_prefix + os.path.splitext(path)[1])
     shutil.move(path, dist_path)
+    print('成功：' + dist_path)
 
 if __name__=="__main__":
     print('开始处理...')
@@ -84,7 +112,7 @@ if __name__=="__main__":
         images_proxy = manager1.list()
         lock1 = manager1.Lock()
         pl1 = Pool(cpu_count - 1 if cpu_count - 1 > 1 else 1)
-        for t in ('jpeg', 'png', 'jpg', 'mp4', 'mov'):
+        for t in mime_types:
             pl1.apply_async(get_images_path, args=(t, images_proxy, lock1))
         pl1.close()
         pl1.join()
