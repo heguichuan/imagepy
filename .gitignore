@@ -127,3 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+*
+!.gitignore
+!main.py
+!README.md
+!test.py
