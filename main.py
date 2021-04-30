@@ -18,6 +18,7 @@ from multiprocessing import Pool, Manager
 import glob
 from hachoir import parser,metadata
 from geopy.geocoders import Nominatim
+from configparser import ConfigParser
 
 # 自定义程序运行参数
 mime_types = ['jpeg', 'png', 'jpg', 'webp', 'gif', 'bmp', 'mp4', 'mov', 'm4v', 'wmv', 'avi', 'rm', 'rmvb']
@@ -25,14 +26,48 @@ root = os.getcwd()
 dist_root = os.path.join(root, 'dist')
 no_create_time_root = os.path.join(root, '无拍摄时间')
 log_file = os.path.join(root, '重复文件记录.txt')
+config_path = os.path.join(root, 'config.ini')
 ###################################################################
 
-mime_types.extend(list(map(lambda s: s.upper(), mime_types)))
-if not os.path.exists(no_create_time_root):
-    os.mkdir(no_create_time_root)
-if not os.path.exists(dist_root):
-    os.mkdir(dist_root)
 geolocator = Nominatim(user_agent="imagepy")
+
+def parse_config():
+    global mime_types,root,dist_root,no_create_time_root,log_file
+    if not os.path.exists(config_path):
+        return
+    cfg = ConfigParser()
+    try:
+        cfg.read('./config.ini')
+    except:
+        return
+    try:
+        mime_types = cfg['common']['mime_types'].split(',')
+    except:
+        pass
+    try:
+        root = cfg['common']['root']
+    except:
+        pass
+    try:
+        dist_root = cfg['common']['dist']
+    except:
+        pass
+    try:
+        no_create_time_root = cfg['common']['fallback_dist']
+    except:
+        pass
+    try:
+        log_file = cfg.get('common', 'log_file')
+    except:
+        pass
+
+def ensure_path():
+    global mime_types
+    mime_types.extend(list(map(lambda s: s.upper(), mime_types)))
+    if not os.path.exists(no_create_time_root):
+        os.mkdir(no_create_time_root)
+    if not os.path.exists(dist_root):
+        os.mkdir(dist_root)
 
 def get_images_path(media_type, images, lock):
     pattern = os.path.join(root, '**/*.' + media_type)
@@ -129,7 +164,6 @@ def move_file(path, record_files, duplicated_files, lock):
     dist_path = os.path.join(dist_dir, filename_prefix + geo_address + os.path.splitext(path)[1])
     if not os.path.exists(dist_path):
         shutil.move(path, dist_path)
-        print('成功：' + dist_path)
     else:
         # 可能之前该目录已经存在被处理的文件
         lock.acquire()
@@ -138,6 +172,9 @@ def move_file(path, record_files, duplicated_files, lock):
         else:
             duplicated_files[unique_key] = record_files[unique_key] + ',' + path
         lock.release()
+
+parse_config()
+ensure_path()
 
 if __name__=="__main__":
     print('开始处理...')
