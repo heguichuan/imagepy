@@ -7,6 +7,8 @@
 # https://www.huaweicloud.com/articles/b4f513903329669a822a4414d67b19a0.html
 # https://docs.python.org/zh-cn/3/library/multiprocessing.html?highlight=queue
 # https://pypi.org/project/ExifRead/
+# https://www.jianshu.com/p/3b61923efdf1
+# https://blog.csdn.net/weixin_43745169/article/details/100988915
 import exifread
 import os
 import shutil
@@ -15,6 +17,7 @@ from functools import partial
 from multiprocessing import Pool, Manager
 import glob
 from hachoir import parser,metadata
+from geopy.geocoders import Nominatim
 
 # 自定义程序运行参数
 mime_types = ['jpeg', 'png', 'jpg', 'webp', 'gif', 'bmp', 'mp4', 'mov', 'm4v', 'wmv', 'avi', 'rm', 'rmvb']
@@ -29,6 +32,7 @@ if not os.path.exists(no_create_time_root):
     os.mkdir(no_create_time_root)
 if not os.path.exists(dist_root):
     os.mkdir(dist_root)
+geolocator = Nominatim(user_agent="imagepy")
 
 def get_images_path(media_type, images, lock):
     pattern = os.path.join(root, '**/*.' + media_type)
@@ -50,7 +54,21 @@ def output_duplicated_files(duplicated_files):
                 f.write(item.replace(',', '\n') +'\n\n')
         print('存在重复文件，详情查看：重复文件记录.txt')
 
-def media_original_time(filePath):
+def geo_parse(latitude, longitude):
+    if not isinstance(latitude, str) or latitude == '' or not isinstance(longitude, str) or longitude == '':
+        return ''
+    latitude_longitude = latitude + ',' + longitude
+    try:
+        position = geolocator.reverse(latitude_longitude)
+        address = position.address
+    except:
+        return ''
+    address = address.split(', ')
+    address.reverse()
+    address.pop(1)
+    return ''.join(address)
+
+def get_media_metas(filePath):
     parserFile = parser.createParser(filePath) #解析文件
     if not parserFile:
         return ''
@@ -63,13 +81,20 @@ def media_original_time(filePath):
     metaInfos = metadataDecode.exportPlaintext(line_prefix="") # 将文件的metadata转换为list,且将前缀设置为空
     creation_date = ''
     date_time_original = ''
+    latitude = ''
+    longitude = ''
     for meta in metaInfos:
         #如果字符串在列表中,则提取数字部分,即为文件创建时间
         if 'Creation date' in meta:
             creation_date = meta.replace('Creation date: ', '').replace(' ', '_')
         elif 'Date-time original' in meta:
             date_time_original = meta.replace('Date-time original: ', '').replace(' ', '_')
-    return date_time_original or creation_date
+        elif 'Latitude' in meta:
+            latitude = meta.replace('Latitude: ', '')
+        elif 'Longitude' in meta:
+            longitude = meta.replace('Longitude: ', '')
+    geo_address = geo_parse(latitude, longitude)
+    return ((date_time_original or creation_date), geo_address)
 
 def move_file(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
@@ -86,7 +111,9 @@ def move_file(path, record_files, duplicated_files, lock):
         return
     record_files[unique_key] = '**-' + unique_key[1][8:24] + os.path.splitext(path)[1]
     lock.release()
-    create_time = media_original_time(path)
+    (create_time, geo_address) = get_media_metas(path)
+    if geo_address != '':
+        geo_address = '_' + geo_address
     dist_dir = no_create_time_root
     filename_prefix = unique_key[1][8:24]
     if create_time != '':
@@ -98,8 +125,8 @@ def move_file(path, record_files, duplicated_files, lock):
             dist_dir = os.path.join(dist_root, year + '/' + year_month)
             if not os.path.exists(dist_dir):
                 os.makedirs(dist_dir)
-
-    dist_path = os.path.join(dist_dir, filename_prefix + os.path.splitext(path)[1])
+    
+    dist_path = os.path.join(dist_dir, filename_prefix + geo_address + os.path.splitext(path)[1])
     shutil.move(path, dist_path)
     print('成功：' + dist_path)
 
