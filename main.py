@@ -14,15 +14,17 @@ import hashlib
 from functools import partial
 from multiprocessing import Pool, Manager
 import glob
-import re
 from hachoir import parser,metadata
 
+# 自定义程序运行参数
 mime_types = ['jpeg', 'png', 'jpg', 'webp', 'gif', 'bmp', 'mp4', 'mov', 'm4v', 'wmv', 'avi', 'rm', 'rmvb']
-mime_types.extend(list(map(lambda s: s.upper(), mime_types)))
-
 root = os.getcwd()
 dist_root = os.path.join(root, 'dist')
 no_create_time_root = os.path.join(root, '无拍摄时间')
+log_file = os.path.join(root, '重复文件记录.txt')
+###################################################################
+
+mime_types.extend(list(map(lambda s: s.upper(), mime_types)))
 if not os.path.exists(no_create_time_root):
     os.mkdir(no_create_time_root)
 if not os.path.exists(dist_root):
@@ -43,7 +45,7 @@ def check_md5(path, f):
 
 def output_duplicated_files(duplicated_files):
     if len(duplicated_files.values()) > 0:
-        with open('./重复文件记录.txt', 'w') as f:
+        with open(log_file, 'w') as f:
             for item in duplicated_files.values():
                 f.write(item.replace(',', '\n') +'\n\n')
         print('存在重复文件，详情查看：重复文件记录.txt')
@@ -58,17 +60,16 @@ def media_original_time(filePath):
         return ''
     if not metadataDecode:
         return ''
-
     metaInfos = metadataDecode.exportPlaintext(line_prefix="") # 将文件的metadata转换为list,且将前缀设置为空
     creation_date = ''
     date_time_original = ''
     for meta in metaInfos:
         #如果字符串在列表中,则提取数字部分,即为文件创建时间
         if 'Creation date' in meta:
-            creation_date = re.sub(r"\D",'',meta)    #使用正则表达式将列表中的非数字元素剔除
+            creation_date = meta.replace('Creation date: ', '').replace(' ', '_')
         elif 'Date-time original' in meta:
-            date_time_original = re.sub(r"\D",'',meta)    #使用正则表达式将列表中的非数字元素剔除
-    return (date_time_original or creation_date)[0:8]
+            date_time_original = meta.replace('Date-time original: ', '').replace(' ', '_')
+    return date_time_original or creation_date
 
 def move_file(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
@@ -83,19 +84,17 @@ def move_file(path, record_files, duplicated_files, lock):
             duplicated_files[unique_key] = record_files[unique_key] + ',' + path
         lock.release()
         return
-    record_files[unique_key] = '**-' + unique_key[1][8:24] + os.path.splitext(path)[1] #占位释放锁
+    record_files[unique_key] = '**-' + unique_key[1][8:24] + os.path.splitext(path)[1]
     lock.release()
-
     create_time = media_original_time(path)
     dist_dir = no_create_time_root
     filename_prefix = unique_key[1][8:24]
     if create_time != '':
-        year_month_day = create_time
-        year_month = year_month_day[0:6]
-        year = year_month[0:4]
+        year_month = create_time[:7]
+        year = year_month[:4]
         # 如果年份小于2000年明显不对
         if int(year) > 2000:
-            filename_prefix = year_month_day + '-' + unique_key[1][8:24]
+            filename_prefix = create_time + '_' + unique_key[1][8:24]
             dist_dir = os.path.join(dist_root, year + '/' + year_month)
             if not os.path.exists(dist_dir):
                 os.makedirs(dist_dir)
