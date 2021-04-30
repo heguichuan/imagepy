@@ -127,8 +127,17 @@ def move_file(path, record_files, duplicated_files, lock):
                 os.makedirs(dist_dir)
     
     dist_path = os.path.join(dist_dir, filename_prefix + geo_address + os.path.splitext(path)[1])
-    shutil.move(path, dist_path)
-    print('成功：' + dist_path)
+    if not os.path.exists(dist_path):
+        shutil.move(path, dist_path)
+        print('成功：' + dist_path)
+    else:
+        # 可能之前该目录已经存在被处理的文件
+        lock.acquire()
+        if unique_key in duplicated_files:
+            duplicated_files[unique_key] = duplicated_files[unique_key] + ',' + path
+        else:
+            duplicated_files[unique_key] = record_files[unique_key] + ',' + path
+        lock.release()
 
 if __name__=="__main__":
     print('开始处理...')
