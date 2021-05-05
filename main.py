@@ -9,6 +9,9 @@
 # https://pypi.org/project/ExifRead/
 # https://www.jianshu.com/p/3b61923efdf1
 # https://blog.csdn.net/weixin_43745169/article/details/100988915
+
+# todo 使用exiftool； FFmpeg怎么查看位置信息
+# https://stackoverflow.com/questions/10075115/call-exiftool-from-a-python-script
 import exifread
 import os
 import shutil
@@ -19,6 +22,7 @@ import glob
 from hachoir import parser,metadata
 from geopy.geocoders import Nominatim
 from configparser import ConfigParser
+import ffmpeg # pip install ffmpeg-python
 
 # 自定义程序运行参数
 mime_types = ['jpeg', 'png', 'jpg', 'webp', 'gif', 'bmp', 'mp4', 'mov', 'm4v', 'wmv', 'avi', 'rm', 'rmvb']
@@ -76,11 +80,15 @@ def get_images_path(media_type, images, lock):
     images.extend(images_part)
     lock.release()
 
-def check_md5(path, f):
+def check_md5(f):
     d = hashlib.md5()
     for buf in iter(partial(f.read, 8 * 1024), b''):
         d.update(buf)
     return d
+
+def video_meta(video_path):
+    info = ffmpeg.probe(video_path)
+    return info['format']['tags'].get('creation_time', '')
 
 def output_duplicated_files(duplicated_files):
     if len(duplicated_files.values()) > 0:
@@ -121,9 +129,9 @@ def get_media_metas(filePath):
     for meta in metaInfos:
         #如果字符串在列表中,则提取数字部分,即为文件创建时间
         if 'Creation date' in meta:
-            creation_date = meta.replace('Creation date: ', '').replace(' ', '_')
+            creation_date = meta.replace('Creation date: ', '').replace(' ', '_').replace(':', '')
         elif 'Date-time original' in meta:
-            date_time_original = meta.replace('Date-time original: ', '').replace(' ', '_')
+            date_time_original = meta.replace('Date-time original: ', '').replace(' ', '_').replace(':', '')
         elif 'Latitude' in meta:
             latitude = meta.replace('Latitude: ', '')
         elif 'Longitude' in meta:
@@ -133,7 +141,7 @@ def get_media_metas(filePath):
 
 def move_file(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
-        md5 = check_md5(path, f)
+        md5 = check_md5(f)
     unique_key = (os.path.getsize(path), md5.hexdigest())
 
     lock.acquire()
