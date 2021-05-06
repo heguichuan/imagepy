@@ -31,6 +31,7 @@ dist_root = os.path.join(root, 'dist')
 no_create_time_root = os.path.join(root, '无拍摄时间')
 log_file = os.path.join(root, '重复文件记录.txt')
 config_path = os.path.join(root, 'config.ini')
+exiftool_bin=
 ###################################################################
 
 geolocator = Nominatim(user_agent="imagepy")
@@ -138,6 +139,37 @@ def get_media_metas(filePath):
             longitude = meta.replace('Longitude: ', '')
     geo_address = geo_parse(latitude, longitude)
     return ((date_time_original or creation_date), geo_address)
+
+class ExifTool(object):
+    # windows: sentinel = "{ready}\r\n" #todo
+    sentinel = "{ready}\n"
+
+    def __init__(self, executable="/usr/local/bin/exiftool"):
+        self.executable = executable
+
+    def __enter__(self):
+        self.process = subprocess.Popen(
+            [self.executable, "-stay_open", "True",  "-@", "-"],
+            universal_newlines=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        return self
+
+    def  __exit__(self, exc_type, exc_value, traceback):
+        self.process.stdin.write("-stay_open\nFalse\n")
+        self.process.stdin.flush()
+
+    def execute(self, *args):
+        args = args + ("-execute\n",)
+        self.process.stdin.write(str.join("\n", args))
+        self.process.stdin.flush()
+        output = ""
+        fd = self.process.stdout.fileno()
+        while not output.endswith(self.sentinel):
+            output += os.read(fd, 4096).decode('utf-8')
+        return output[:-len(self.sentinel)]
+
+    def get_metadata(self, *filenames):
+        return json.loads(self.execute("-G", "-j", "-n", *filenames))
 
 def move_file(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
