@@ -9,18 +9,17 @@
 # https://pypi.org/project/ExifRead/
 # https://www.jianshu.com/p/3b61923efdf1
 # https://blog.csdn.net/weixin_43745169/article/details/100988915
-
-# todo 使用exiftool； FFmpeg怎么查看位置信息
 # https://stackoverflow.com/questions/10075115/call-exiftool-from-a-python-script
+
 import exifread
 import os
 import shutil
 import hashlib
 from functools import partial
-# from multiprocessing import Pool, Manager
+from multiprocessing import Pool, Manager
 import glob
 from hachoir import parser,metadata
-from geopy.geocoders import Nominatim
+from geopy.geocoders import BaiduV3
 from configparser import ConfigParser
 import ffmpeg # pip install ffmpeg-python
 import subprocess
@@ -37,7 +36,10 @@ config_path = os.path.join(root, 'config.ini')
 exiftool_bin = '/usr/local/bin/exiftool'
 ###################################################################
 
-geolocator = Nominatim(user_agent="imagepy")
+geolocator = BaiduV3(
+    api_key='DFUEvQuBiq59GKd1S6GHdK2MoaSZkELF',
+    security_key='6xO3d0VszSBKLBNpaO7XI9gHrTPexat6',
+)
 
 def parse_config():
     global mime_types,root,dist_root,no_create_time_root,log_file
@@ -98,20 +100,6 @@ def output_duplicated_files(duplicated_files):
                 f.write(item.replace(',', '\n') +'\n\n')
         print('存在重复文件，详情查看：重复文件记录.txt')
 
-def geo_parse(latitude, longitude):
-    if not isinstance(latitude, str) or latitude == '' or not isinstance(longitude, str) or longitude == '':
-        return ''
-    latitude_longitude = latitude + ',' + longitude
-    try:
-        position = geolocator.reverse(latitude_longitude)
-        address = position.address
-    except:
-        return ''
-    address = address.split(', ')
-    address.reverse()
-    address.pop(1)
-    return ''.join(address)
-
 def get_media_metas(filePath):
     parserFile = parser.createParser(filePath) #解析文件
     if not parserFile:
@@ -171,6 +159,57 @@ class ExifTool(object):
     def get_metadata(self, *filenames):
         return json.loads(self.execute("-G", "-j", "-n", *filenames))
 
+def create_date_parse(create_date):
+    create_date = create_date.replace(' ', '').replace(':', '')
+    dist_path_time_part = ''
+    if create_date != '':
+        year_month = create_date[:6]
+        year = year_month[:4]
+        # 如果年份小于2000年明显不对
+        if int(year) > 2000:
+            tmp = list(create_date)
+            tmp.insert(8, '_')
+            dist_path_time_part = os.path.join(year, year_month, ''.join(tmp))
+    return dist_path_time_part
+
+def parse_meta(meta):
+    create_date_keys = ('EXIF:CreateDate', 'QuickTime:CreateDate')
+    create_date = ''
+    for key in create_date_keys:
+        if meta.get(key):
+            create_date = meta.get(key)
+            break
+    return (create_date_parse(create_date), meta.get('SourceFile', ''))
+
+def check_md5_and_move_file(source_file, dist_path_time_part, duplicated_files, lock):
+    with open(source_file, 'rb') as f:
+        md5 = check_md5(f)
+    file_hash = md5.hexdigest()[8:24]
+    dist_file_path = ''
+    if not dist_path_time_part == '':
+        dist_file_path = os.path.join(dist_root, dist_path_time_part + '_' + file_hash + os.path.splitext(source_file)[1])
+    else:
+        dist_file_path = os.path.join(no_create_time_root, file_hash + os.path.splitext(source_file)[1])
+    lock.acquire()
+    try:
+        if not os.path.exists(dist_file_path):
+            # 判断目标目录是否存在，不存在则创建，不然move操作报错
+            dirname = os.path.dirname(dist_file_path)
+            if not os.path.exists(dirname):
+                os.makedirs(dirname)
+            shutil.move(source_file, dist_file_path)
+        else:
+            if file_hash in duplicated_files:
+                duplicated_files[file_hash] = duplicated_files[file_hash] + ',' + source_file
+            else:
+                duplicated_files[file_hash] = dist_file_path + ',' + source_file
+    except:
+        print('文件移动失败：' + source_file + ' -> ' + dist_file_path)
+    lock.release()
+
+def parse_metas(metas):
+    return map(parse_meta, metas)
+
 def travel_files(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
         md5 = check_md5(f)
@@ -188,10 +227,11 @@ def travel_files(path, record_files, duplicated_files, lock):
     lock.release()
     # todo 不查md5，使用创建时间\文件大小\gps\来决定唯一性。对于没有创建时间的再计算md5
 
+
 def move_file(path, record_files, duplicated_files, lock):
     with open(path, 'rb') as f:
         md5 = check_md5(f)
-    unique_key = (os.path.getsize(path), md5.hexdigest())
+    unique_key = (os.path.getsize(path), )
 
     lock.acquire()
     if unique_key in record_files:
@@ -240,34 +280,19 @@ if __name__=="__main__":
     for t in mime_types:
         images.extend(get_images_path(t))
 
-    # with Manager() as manager2:
-    #     record_files = manager2.dict() #保存已记录的文件信息
-    #     duplicated_files = manager2.dict() #保存重复的文件信息
-    #     lock2 = manager2.Lock()
-
-    #     pl2 = Pool(cpu_count - 1 if cpu_count - 1 > 1 else 1)
-    #     for image_path in images:
-    #         pl2.apply_async(move_file, args=(image_path, record_files, duplicated_files, lock2))
-    #     pl2.close()
-    #     pl2.join()
-    #     output_duplicated_files(duplicated_files)
-    
-
-    with ExifTool() as ex:
+    with ExifTool() as ex, Manager() as manager:
         pointer = 0
         skip = 1
+
+        duplicated_files = manager.dict() #保存重复的文件信息
+        lock = manager.Lock()
+        pool = Pool(cpu_count - 1 if cpu_count - 1 > 1 else 1)
         while pointer < len(images):
-            with open(images[pointer], 'rb') as f:
-                print(time.time())
-                print(images[pointer])
-                start = time.time()
-                md5 = check_md5(f)
-                md5.hexdigest()
-                print(time.time() - start)
             pointer += skip
             metas = ex.get_metadata(*images[pointer-skip:pointer])
-            
-            # print(metas)
-            print('-----------')
-
+            for (dist_path_time_part, source_file) in list(parse_metas(metas)):
+                pool.apply_async(check_md5_and_move_file, args=(source_file, dist_path_time_part, duplicated_files, lock))
+        pool.close()
+        pool.join()
+        output_duplicated_files(duplicated_files)
     print('处理完成啦!')
